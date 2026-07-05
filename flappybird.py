@@ -13,7 +13,7 @@ from pygame.locals import *
 
 FPS = 60
 ANIMATION_SPEED = 0.18  # pixels per millisecond
-WIN_WIDTH = 284 * 2     # BG image size: 284x512 px; tiled twice
+WIN_WIDTH = 768
 WIN_HEIGHT = 512
 
 PIPE_RISE_SPEED = 0.4   # px/ms when space held
@@ -239,9 +239,6 @@ class PipePair(pygame.sprite.Sprite):
         self.y_offset = 0.0
         self.score_counted = False
 
-        self.image = pygame.Surface((PipePair.WIDTH, WIN_HEIGHT), SRCALPHA)
-        self.image.convert()   # speeds up blitting
-        self.image.fill((0, 0, 0, 0))
         total_pipe_body_pieces = int(
             (WIN_HEIGHT -                  # fill window from top to bottom
              3 * Bird.HEIGHT -             # make room for bird to fit through
@@ -251,19 +248,30 @@ class PipePair(pygame.sprite.Sprite):
         self.bottom_pieces = randint(1, total_pipe_body_pieces)
         self.top_pieces = total_pipe_body_pieces - self.bottom_pieces
 
-        # bottom pipe
-        for i in range(1, self.bottom_pieces + 1):
-            piece_pos = (0, WIN_HEIGHT - i*PipePair.PIECE_HEIGHT)
-            self.image.blit(pipe_body_img, piece_pos)
-        bottom_pipe_end_y = WIN_HEIGHT - self.bottom_height_px
-        bottom_end_piece_pos = (0, bottom_pipe_end_y - PipePair.PIECE_HEIGHT)
-        self.image.blit(pipe_end_img, bottom_end_piece_pos)
+        PH = PipePair.PIECE_HEIGHT
+        # extra pixels above/below so pipes don't get clipped when y_offset shifts
+        self._extra = 2000
+        surf_h = WIN_HEIGHT + 2 * self._extra
 
-        # top pipe
-        for i in range(self.top_pieces):
-            self.image.blit(pipe_body_img, (0, i * PipePair.PIECE_HEIGHT))
-        top_pipe_end_y = self.top_height_px
-        self.image.blit(pipe_end_img, (0, top_pipe_end_y))
+        self.image = pygame.Surface((PipePair.WIDTH, surf_h), SRCALPHA)
+        self.image.convert()
+        self.image.fill((0, 0, 0, 0))
+
+        # gap boundaries in window space, then offset into the larger surface
+        gap_top = self.top_pieces * PH + PH
+        gap_bottom = WIN_HEIGHT - self.bottom_pieces * PH - PH
+        s_gap_top = self._extra + gap_top
+        s_gap_bottom = self._extra + gap_bottom
+
+        # top pipe: body fills from surface top to just before end piece
+        for y in range(0, s_gap_top - PH, PH):
+            self.image.blit(pipe_body_img, (0, y))
+        self.image.blit(pipe_end_img, (0, s_gap_top - PH))
+
+        # bottom pipe: end piece then body fills to surface bottom
+        self.image.blit(pipe_end_img, (0, s_gap_bottom))
+        for y in range(s_gap_bottom + PH, surf_h, PH):
+            self.image.blit(pipe_body_img, (0, y))
 
         # compensate for added end pieces
         self.top_pieces += 1
@@ -290,7 +298,7 @@ class PipePair(pygame.sprite.Sprite):
     @property
     def rect(self):
         """Get the Rect which contains this PipePair."""
-        return Rect(self.x, self.y_offset, PipePair.WIDTH, WIN_HEIGHT)
+        return Rect(self.x, self.y_offset - self._extra, PipePair.WIDTH, WIN_HEIGHT + 2 * self._extra)
 
     def update(self, delta_frames=1, rising=False):
         """Update the PipePair's position.
@@ -461,7 +469,7 @@ def load_images():
         img.convert()
         return img
 
-    return {'background': load_image('background.png'),
+    return {'background': load_image('space-theme-bg.png'),
             'pipe-end': load_image('pipe_end.png'),
             'pipe-body': load_image('pipe_body.png'),
             # images for animating the flapping bird -- animated GIFs are
@@ -498,6 +506,10 @@ def main():
     """
 
     pygame.init()
+    pygame.mixer.init()
+    dying_sound = pygame.mixer.Sound(
+        os.path.join(os.path.dirname(__file__), 'sound', 'dyingSound.mp3')
+    )
 
     display_surface = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
     pygame.display.set_caption('Pygame Flappy Bird')
@@ -567,10 +579,12 @@ def main():
         if not hunt_mode:
             pipe_collision = any(p.collides_with(bird) for p in pipes)
             if pipe_collision:
+                dying_sound.play()
+                pygame.time.wait(int(dying_sound.get_length() * 1000))
                 done = True
 
-        for x in (0, WIN_WIDTH / 2):
-            display_surface.blit(images['background'], (x, 0))
+        bg = pygame.transform.scale(images['background'], (WIN_WIDTH, WIN_HEIGHT))
+        display_surface.blit(bg, (0, 0))
 
         while pipes and not pipes[0].visible:
             pipes.popleft()
