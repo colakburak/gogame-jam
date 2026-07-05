@@ -4,7 +4,7 @@
 
 import math
 import os
-from random import randint
+from random import randint, random
 from collections import deque
 
 import pygame
@@ -98,12 +98,19 @@ class Bird(pygame.sprite.Sprite):
 
     HUNT_SPEED = 0.22       # px/ms while evading in spaceship mode
 
+    # --- Fairness knobs: keep the bird beatable and un-jittery -------------
+    DODGE_CHANCE = 0.55     # probability it bothers to dodge a threat
+    REACTION_MS = 320       # min time between dodge *decisions*
+    DODGE_COMMIT_MS = 260   # once dodging, hold that direction this long
+    REACT_DISTANCE = 190    # only reacts to lasers closer than this (px)
+
     def hunt_update(self, lasers, delta_frames=1):
         """Move the bird on its own during spaceship (hunt) mode.
 
-        The bird wanders toward a roving target and actively dodges any
-        laser that is approaching and roughly level with it, so the
-        player has to chase and time their shots.
+        The bird wanders toward a roving target and *sometimes* dodges an
+        incoming laser.  A reaction delay, a commit-to-one-direction, and
+        a less-than-certain dodge chance keep it human-beatable instead of
+        a frame-perfect aimbot.
 
         Arguments:
         lasers: The iterable of active Laser objects to evade.
@@ -112,24 +119,44 @@ class Bird(pygame.sprite.Sprite):
         dt = frames_to_msec(delta_frames)
         my_center = self.y + Bird.HEIGHT / 2
 
-        # Dodge the nearest incoming laser that is level with the bird.
-        dodge = 0
-        for laser in lasers:
-            if laser.x > self.x and abs(laser.y - my_center) < 55:
-                dodge = -1 if laser.y > my_center else 1
-                break
+        # Timers persist on the instance between frames.
+        self._react_timer = getattr(self, '_react_timer', 0.0) - dt
+        self._dodge_time = getattr(self, '_dodge_time', 0.0) - dt
+        dodge_dir = getattr(self, '_dodge_dir', 0)
 
-        if dodge:
-            self.y += dodge * Bird.HUNT_SPEED * 1.8 * dt
+        if self._dodge_time > 0 and dodge_dir:
+            # Mid-dodge: keep sliding the same way (no twitching).
+            self.y += dodge_dir * Bird.HUNT_SPEED * 1.7 * dt
         else:
-            # Gentle wander toward a target that changes every so often.
-            self._wander_timer = getattr(self, '_wander_timer', 0.0) - dt
-            if self._wander_timer <= 0:
-                self._wander_target = randint(0, WIN_HEIGHT - Bird.HEIGHT)
-                self._wander_timer = randint(500, 1200)
-            target = getattr(self, '_wander_target', self.y)
-            if abs(target - self.y) > 2:
-                self.y += (1 if target > self.y else -1) * Bird.HUNT_SPEED * dt
+            # Allowed to make a fresh decision only after the reaction delay.
+            threat = None
+            if self._react_timer <= 0:
+                for laser in lasers:
+                    if (laser.x > self.x
+                            and laser.x - self.x < Bird.REACT_DISTANCE
+                            and abs(laser.y - my_center) < 55):
+                        threat = laser
+                        break
+
+            if threat is not None:
+                self._react_timer = Bird.REACTION_MS
+                if random() < Bird.DODGE_CHANCE:
+                    # Commit to a dodge away from the laser's line.
+                    self._dodge_dir = -1 if threat.y > my_center else 1
+                    self._dodge_time = Bird.DODGE_COMMIT_MS
+                    self.y += self._dodge_dir * Bird.HUNT_SPEED * 1.7 * dt
+                else:
+                    self._dodge_dir = 0   # this shot gets a clean look
+            else:
+                # Gentle wander toward a target that changes every so often.
+                self._wander_timer = getattr(self, '_wander_timer', 0.0) - dt
+                if self._wander_timer <= 0:
+                    self._wander_target = randint(0, WIN_HEIGHT - Bird.HEIGHT)
+                    self._wander_timer = randint(500, 1200)
+                target = getattr(self, '_wander_target', self.y)
+                if abs(target - self.y) > 2:
+                    self.y += ((1 if target > self.y else -1)
+                               * Bird.HUNT_SPEED * dt)
 
         self.y = max(0, min(WIN_HEIGHT - Bird.HEIGHT, self.y))
 
