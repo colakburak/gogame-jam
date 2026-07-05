@@ -332,6 +332,10 @@ def main():
     """
 
     pygame.init()
+    pygame.mixer.init()
+    dying_sound = pygame.mixer.Sound(
+        os.path.join(os.path.dirname(__file__), 'sound', 'dyingSound.mp3')
+    )
 
     display_surface = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
     pygame.display.set_caption('Pygame Flappy Bird')
@@ -372,6 +376,8 @@ def main():
         # check for collisions
         pipe_collision = any(p.collides_with(bird) for p in pipes)
         if pipe_collision:
+            dying_sound.play()
+            pygame.time.wait(int(dying_sound.get_length() * 1000))
             done = True
 
         bg = pygame.transform.scale(images['background'], (WIN_WIDTH, WIN_HEIGHT))
