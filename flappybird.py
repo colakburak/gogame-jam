@@ -96,6 +96,43 @@ class Bird(pygame.sprite.Sprite):
         else:
             self.y += Bird.SINK_SPEED * frames_to_msec(delta_frames)
 
+    HUNT_SPEED = 0.22       # px/ms while evading in spaceship mode
+
+    def hunt_update(self, lasers, delta_frames=1):
+        """Move the bird on its own during spaceship (hunt) mode.
+
+        The bird wanders toward a roving target and actively dodges any
+        laser that is approaching and roughly level with it, so the
+        player has to chase and time their shots.
+
+        Arguments:
+        lasers: The iterable of active Laser objects to evade.
+        delta_frames: The number of frames elapsed since the last call.
+        """
+        dt = frames_to_msec(delta_frames)
+        my_center = self.y + Bird.HEIGHT / 2
+
+        # Dodge the nearest incoming laser that is level with the bird.
+        dodge = 0
+        for laser in lasers:
+            if laser.x > self.x and abs(laser.y - my_center) < 55:
+                dodge = -1 if laser.y > my_center else 1
+                break
+
+        if dodge:
+            self.y += dodge * Bird.HUNT_SPEED * 1.8 * dt
+        else:
+            # Gentle wander toward a target that changes every so often.
+            self._wander_timer = getattr(self, '_wander_timer', 0.0) - dt
+            if self._wander_timer <= 0:
+                self._wander_target = randint(0, WIN_HEIGHT - Bird.HEIGHT)
+                self._wander_timer = randint(500, 1200)
+            target = getattr(self, '_wander_target', self.y)
+            if abs(target - self.y) > 2:
+                self.y += (1 if target > self.y else -1) * Bird.HUNT_SPEED * dt
+
+        self.y = max(0, min(WIN_HEIGHT - Bird.HEIGHT, self.y))
+
     @property
     def image(self):
         """Get a Surface containing this bird's image.
@@ -522,6 +559,10 @@ def main():
             controls_live = countdown_left <= 0
             direction = (keys[K_DOWN] - keys[K_UP]) if controls_live else 0
             spaceship.update(direction)
+
+            # Once the countdown ends, the bird flies (and dodges) on its own.
+            if controls_live and bird_alive:
+                bird.hunt_update(lasers)
 
             if controls_live:
                 while lasers and not lasers[0].visible:
