@@ -6,7 +6,7 @@ An UFO Appears?!
 
 ## How to Install
 - Create a new Venv in python with: python -m venv .venv
-- Set up a Virtual Environment with: source .venv/bin/activate or .venv/Scripts/activate
+- Activate the Venv with: source .venv/bin/activate or .venv/Scripts/activate
 - Install Dependency: pip install pygame
 - Start the game: python flappybird.py
 
