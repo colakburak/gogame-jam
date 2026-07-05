@@ -252,6 +252,116 @@ class PipePair(pygame.sprite.Sprite):
         return pygame.sprite.collide_mask(self, bird)
 
 
+class Spaceship(pygame.sprite.Sprite):
+    """A UFO that hunts the bird once 'G' is pressed.
+
+    The player steers it up and down with the arrow keys and fires
+    lasers (leftward, toward the bird) with the space bar.
+
+    Constants:
+    WIDTH, HEIGHT: The spaceship's dimensions, in pixels.
+    MOVE_SPEED: Vertical speed, in pixels per millisecond, while an
+        arrow key is held.
+    ENTER_SPEED: Speed, in px/ms, at which it flies in from the right.
+    """
+
+    WIDTH = 64
+    HEIGHT = 30
+    MOVE_SPEED = 0.35
+    ENTER_SPEED = 0.3
+
+    def __init__(self, y):
+        """Create a spaceship just off the right edge of the screen.
+
+        Arguments:
+        y: The spaceship's initial (and vertical starting) Y coordinate.
+        """
+        super(Spaceship, self).__init__()
+        self.x = float(WIN_WIDTH)            # start just off-screen right
+        self.target_x = float(WIN_WIDTH - Spaceship.WIDTH - 10)
+        self.y = float(y)
+        self.image = self._build_image()
+        self.mask = pygame.mask.from_surface(self.image)
+
+    @staticmethod
+    def _build_image():
+        """Draw the UFO onto a transparent Surface."""
+        surf = pygame.Surface((Spaceship.WIDTH, Spaceship.HEIGHT), SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        w, h = Spaceship.WIDTH, Spaceship.HEIGHT
+        # saucer body
+        pygame.draw.ellipse(surf, (140, 145, 165), (0, h // 2 - 6, w, 18))
+        pygame.draw.ellipse(surf, (90, 95, 115), (0, h // 2 + 2, w, 8))
+        # glass dome
+        pygame.draw.ellipse(surf, (120, 220, 255), (w // 2 - 15, 2, 30, 22))
+        # laser barrel pointing left
+        pygame.draw.rect(surf, (60, 60, 70), (0, h // 2 - 2, 12, 5))
+        return surf
+
+    def update(self, direction, delta_frames=1):
+        """Move the spaceship.
+
+        Arguments:
+        direction: -1 to move up, +1 to move down, 0 to hold position.
+        delta_frames: The number of frames elapsed since the last call.
+        """
+        if self.x > self.target_x:          # still flying in
+            self.x -= Spaceship.ENTER_SPEED * frames_to_msec(delta_frames)
+            self.x = max(self.target_x, self.x)
+        self.y += direction * Spaceship.MOVE_SPEED * frames_to_msec(delta_frames)
+        self.y = max(0, min(WIN_HEIGHT - Spaceship.HEIGHT, self.y))
+
+    @property
+    def rect(self):
+        """Get the spaceship's position and size, as a pygame.Rect."""
+        return Rect(self.x, self.y, Spaceship.WIDTH, Spaceship.HEIGHT)
+
+    @property
+    def nose(self):
+        """Get the (x, y) point at the front of the laser barrel."""
+        return (self.x, self.y + Spaceship.HEIGHT / 2)
+
+
+class Laser(pygame.sprite.Sprite):
+    """A laser bolt fired leftward by the Spaceship.
+
+    Constants:
+    WIDTH, HEIGHT: The bolt's dimensions, in pixels.
+    SPEED: How fast it travels left, in pixels per millisecond.
+    """
+
+    WIDTH = 18
+    HEIGHT = 4
+    SPEED = 0.8
+
+    def __init__(self, x, y):
+        """Create a laser bolt starting at (x, y)."""
+        super(Laser, self).__init__()
+        self.x = float(x)
+        self.y = float(y)
+
+    def update(self, delta_frames=1):
+        """Move the laser to the left."""
+        self.x -= Laser.SPEED * frames_to_msec(delta_frames)
+
+    @property
+    def rect(self):
+        """Get the laser's position and size, as a pygame.Rect."""
+        return Rect(self.x - Laser.WIDTH, self.y - Laser.HEIGHT / 2,
+                    Laser.WIDTH, Laser.HEIGHT)
+
+    @property
+    def visible(self):
+        """Get whether the laser is still on screen."""
+        return self.x > -Laser.WIDTH
+
+    def draw(self, surface):
+        """Blit a glowing bolt onto the given surface."""
+        pygame.draw.rect(surface, (255, 120, 60), self.rect)
+        pygame.draw.rect(surface, (255, 240, 120),
+                         (self.x - Laser.WIDTH, self.y - 1, Laser.WIDTH, 2))
+
+
 def load_images():
     """Load all images required by the game and return a dict of them.
 
@@ -330,12 +440,23 @@ def main():
 
     clock = pygame.time.Clock()
     score_font = pygame.font.SysFont(None, 32, bold=True)  # default font
+    countdown_font = pygame.font.SysFont(None, 140, bold=True)
     images = load_images()
 
     bird = Bird(int(WIN_WIDTH/2 - Bird.WIDTH/2), int(WIN_HEIGHT/2 - Bird.HEIGHT/2), 0,
                 (images['bird-wingup'], images['bird-wingdown']))
 
     pipes = deque()
+
+    # Hunt-mode state: activated by pressing 'G'.  A spaceship flies in,
+    # pipes stop spawning, and the goal flips to shooting down the bird.
+    hunt_mode = False
+    spaceship = None
+    lasers = deque()
+    bird_alive = True
+    # Frames left in the "3, 2, 1, GO!" intro before the player takes
+    # control of the spaceship.  0 means controls are live.
+    countdown_left = 0
 
     frame_clock = 0  # this counter is only incremented if the game isn't paused
     score = 0
@@ -345,7 +466,8 @@ def main():
 
         # Handle this 'manually'.  If we used pygame.time.set_timer(),
         # pipe addition would be messed up when paused.
-        if not (paused or frame_clock % msec_to_frames(PipePair.ADD_INTERVAL)):
+        if not (paused or hunt_mode or
+                frame_clock % msec_to_frames(PipePair.ADD_INTERVAL)):
             pp = PipePair(images['pipe-end'], images['pipe-body'])
             pipes.append(pp)
 
@@ -355,16 +477,33 @@ def main():
                 break
             elif e.type == KEYUP and e.key in (K_PAUSE, K_p):
                 paused = not paused
+            elif e.type == KEYDOWN and e.key == K_g and not hunt_mode:
+                # Summon the spaceship; a short countdown gives the player
+                # a moment before the hunt begins.
+                hunt_mode = True
+                countdown_left = int(4 * FPS)   # "3", "2", "1", "GO!"
+                spaceship = Spaceship(bird.y + Bird.HEIGHT / 2 -
+                                      Spaceship.HEIGHT / 2)
+            elif (e.type == KEYDOWN and e.key == K_SPACE
+                    and hunt_mode and bird_alive and countdown_left <= 0):
+                # Fire a laser from the spaceship's barrel.
+                nose_x, nose_y = spaceship.nose
+                lasers.append(Laser(nose_x, nose_y))
 
         if paused:
             continue  # don't draw anything
 
-        rising = pygame.key.get_pressed()[K_SPACE]
+        keys = pygame.key.get_pressed()
+        # In hunt mode the space bar fires lasers, so it no longer raises
+        # the pipes.
+        rising = keys[K_SPACE] and not hunt_mode
 
-        # check for collisions
-        pipe_collision = any(p.collides_with(bird) for p in pipes)
-        if pipe_collision:
-            done = True
+        # check for collisions -- pipes only threaten the bird before the
+        # hunt begins; afterwards the bird is the target, not the player.
+        if not hunt_mode:
+            pipe_collision = any(p.collides_with(bird) for p in pipes)
+            if pipe_collision:
+                done = True
 
         for x in (0, WIN_WIDTH / 2):
             display_surface.blit(images['background'], (x, 0))
@@ -376,7 +515,47 @@ def main():
             p.update(rising=rising)
             display_surface.blit(p.image, p.rect)
 
-        display_surface.blit(bird.image, bird.rect)
+        # Hunt mode: move the spaceship, advance lasers, check for a hit.
+        if hunt_mode:
+            # During the countdown the ship flies in but the player
+            # can't steer or fire yet.
+            controls_live = countdown_left <= 0
+            direction = (keys[K_DOWN] - keys[K_UP]) if controls_live else 0
+            spaceship.update(direction)
+
+            if controls_live:
+                while lasers and not lasers[0].visible:
+                    lasers.popleft()
+                for laser in lasers:
+                    laser.update()
+                    laser.draw(display_surface)
+                    if bird_alive and laser.rect.colliderect(bird.rect):
+                        bird_alive = False
+
+            display_surface.blit(spaceship.image, spaceship.rect)
+
+            # Draw the "3, 2, 1, GO!" overlay and count it down.
+            if countdown_left > 0:
+                seconds_left = math.ceil(countdown_left / FPS)
+                text = 'GO!' if seconds_left <= 1 else str(seconds_left - 1)
+                cd_surface = countdown_font.render(text, True, (255, 240, 120))
+                display_surface.blit(
+                    cd_surface,
+                    (WIN_WIDTH / 2 - cd_surface.get_width() / 2,
+                     WIN_HEIGHT / 2 - cd_surface.get_height() / 2))
+                countdown_left -= 1
+
+        if bird_alive:
+            display_surface.blit(bird.image, bird.rect)
+        elif hunt_mode:
+            # The bird is down -- announce it and end the game shortly after.
+            msg = score_font.render('BIRD DOWN!', True, (255, 80, 80))
+            display_surface.blit(
+                msg, (WIN_WIDTH / 2 - msg.get_width() / 2,
+                      WIN_HEIGHT / 2 - msg.get_height() / 2))
+            pygame.display.flip()
+            pygame.time.wait(1500)
+            done = True
 
         # update and display score
         for p in pipes:
